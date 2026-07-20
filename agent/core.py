@@ -5,7 +5,6 @@ from typing import AsyncIterator, Optional
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.memory import MemorySaver
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from config import settings
@@ -42,8 +41,7 @@ class AgentSession:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._agent_graph = None
-        self._memory = MemorySaver()
-        self._config = {"configurable": {"thread_id": session_id}}
+        self._history: list = []  # 手动管理对话历史，避免 checkpointer 状态异常
 
     async def start(self) -> None:
         """Initialize Playwright browser and create the LangChain agent."""
@@ -67,7 +65,6 @@ class AgentSession:
             model=llm,
             tools=tools,
             system_prompt=SYSTEM_PROMPT,
-            checkpointer=self._memory,
         )
         print(f"[DEBUG] Agent created with {len(tools)} tools", flush=True)
 
@@ -96,18 +93,31 @@ class AgentSession:
 
         page = await self._ensure_page()
         set_current_page(page)
+
+        # Build input with full conversation history
+        input_messages = [*self._history, {"role": "user", "content": message}]
         try:
             result = await self._agent_graph.ainvoke(
-                {"messages": [{"role": "user", "content": message}]},
-                config=self._config,
+                {"messages": input_messages},
             )
             # Extract the last AI response from messages
             messages = result.get("messages", [])
+            final_response = None
             for msg in reversed(messages):
                 if hasattr(msg, "content") and msg.type == "ai":
                     content = msg.content
                     if content:
-                        return content
+                        final_response = content
+                        break
+
+            # Update history: keep only user + assistant turns (not tool messages)
+            if final_response:
+                self._history.append({"role": "user", "content": message})
+                self._history.append({"role": "assistant", "content": final_response})
+                # Limit history to last 20 turns to avoid context overflow
+                if len(self._history) > 40:
+                    self._history = self._history[-40:]
+                return final_response
             return "No response generated."
         finally:
             set_current_page(None)
@@ -120,11 +130,14 @@ class AgentSession:
         page = await self._ensure_page()
         set_current_page(page)
         print(f"[DEBUG] stream: page ready, url={page.url}", flush=True)
+
+        # Build input with full conversation history
+        input_messages = [*self._history, {"role": "user", "content": message}]
+        full_response = ""
         try:
             # Use astream with messages mode for token-level streaming
             async for chunk in self._agent_graph.astream(
-                {"messages": [{"role": "user", "content": message}]},
-                config=self._config,
+                {"messages": input_messages},
                 stream_mode="messages",
             ):
                 # chunk is (message_chunk, metadata) tuple
@@ -135,9 +148,16 @@ class AgentSession:
                         if hasattr(msg_chunk, "type") and msg_chunk.type == "AIMessageChunk":
                             content = msg_chunk.content
                             if isinstance(content, str) and content:
+                                full_response += content
                                 yield content
         finally:
             print(f"[DEBUG] stream: done, page is_closed={page.is_closed()}", flush=True)
+            # Update history after stream completes
+            if full_response:
+                self._history.append({"role": "user", "content": message})
+                self._history.append({"role": "assistant", "content": full_response})
+                if len(self._history) > 40:
+                    self._history = self._history[-40:]
             set_current_page(None)
 
     async def close(self) -> None:

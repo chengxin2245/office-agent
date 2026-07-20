@@ -115,13 +115,13 @@ PYTHONPATH=. chainlit run ui/app.py --port 8000
 
 ### 网页信息采集
 > "打开百度热搜榜，提取前10条热搜内容"
-
+![alt text](image-2.png)
 ### 数据导出
 > "爬取百度热搜榜 TOP14，并生成一份 Excel 文件"
-
+![alt text](image-1.png)
 ### 表单填写
-> "打开某某网站，在搜索框输入'天气预报'，点击搜索按钮"
-
+> "打开百度网站，在搜索框输入'世界杯'，点击搜索按钮"
+![alt text](image-3.png)
 ### 连续对话
 > 1. "打开百度" → Agent 导航到百度
 > 2. "搜索 Python 教程" → Agent 记得当前在百度，直接填入搜索
